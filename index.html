@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Gerador de Vídeo com IA</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #loading-overlay { background-color: rgba(0, 0, 0, 0.7); backdrop-filter: blur(5px); }
+        .spinner { border-top-color: #4f46e5; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .tab-button.active { border-bottom: 2px solid #6366f1; color: #6366f1; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white">
+
+    <div class="container mx-auto px-4 py-8 min-h-screen flex flex-col items-center justify-center">
+        <div class="w-full max-w-2xl text-center">
+            <h1 class="text-4xl md:text-5xl font-bold mb-2 bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-500">Gerador de Vídeo IA</h1>
+            <p class="text-gray-400 mb-8">Dê vida às suas ideias com a API do Replicate.</p>
+
+            <div class="bg-gray-800 p-6 rounded-xl shadow-lg">
+                <div class="flex border-b border-gray-700 mb-4">
+                    <button id="tab-text-to-video" class="tab-button flex-1 py-2 text-sm font-medium focus:outline-none active" data-tab="text-to-video"><i class="fas fa-font mr-2"></i>Texto para Vídeo</button>
+                    <button id="tab-image-to-video" class="tab-button flex-1 py-2 text-sm font-medium focus:outline-none" data-tab="image-to-video"><i class="fas fa-image mr-2"></i>Imagem para Vídeo</button>
+                </div>
+
+                <div id="text-to-video-panel" class="tab-panel">
+                    <div class="mb-4"><label for="prompt" class="block text-left text-sm font-medium text-gray-300 mb-2">Descreva a cena:</label><textarea id="prompt" rows="3" class="w-full bg-gray-700 text-white rounded-lg p-3" placeholder="Ex: Um cão corgi a surfar uma onda, 4k, alta definição"></textarea></div>
+                </div>
+
+                <div id="image-to-video-panel" class="tab-panel hidden">
+                    <div class="mb-4"><label for="image-upload" class="block text-left text-sm font-medium text-gray-300 mb-2">Carregar Imagem:</label><input type="file" id="image-upload" accept="image/*" class="w-full bg-gray-700 text-white rounded-lg p-3 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-500 file:text-white hover:file:bg-indigo-600"/><p id="image-name" class="text-xs text-gray-400 mt-2 text-left hidden"></p></div>
+                </div>
+                
+                <button id="generate-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition"><i class="fas fa-magic mr-2"></i>Gerar Vídeo</button>
+            </div>
+
+            <div id="result-container" class="mt-8 bg-gray-800 p-6 rounded-xl shadow-lg hidden"><h2 class="text-xl font-bold mb-4 text-left">O seu vídeo está pronto!</h2><div id="video-wrapper" class="bg-black rounded-lg overflow-hidden"></div></div>
+            <p id="error-message" class="mt-4 text-red-400 hidden"></p>
+        </div>
+    </div>
+
+    <div id="loading-overlay" class="fixed inset-0 z-50 flex-col items-center justify-center hidden"><div class="spinner w-16 h-16 border-4 border-gray-600 rounded-full"></div><p id="loading-text" class="mt-4 text-lg">A enviar para o servidor de IA...</p><p id="loading-status" class="text-sm text-gray-400">(Isto pode levar até 2 minutos)</p></div>
+
+    <script>
+        const REPLICATE_API_TOKEN = "r8_1Idyzo7v7elpPLI2BkpNEPIFbWVrq2U2l7XHl";
+        const PROXY_URL = "https://corsproxy.io/?"; // Um proxy público mais fiável
+
+        const MODEL_TEXT_TO_VIDEO = "anotherjesse/zeroscope-v2-xl:71996d331e8ede8ef7bd76e00b5797e1d4b7cd3da64121f460455812f23811e4";
+        const MODEL_IMAGE_TO_VIDEO = "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172638";
+
+        const generateBtn = document.getElementById('generate-btn');
+        const promptInput = document.getElementById('prompt');
+        const imageUpload = document.getElementById('image-upload');
+        const resultContainer = document.getElementById('result-container');
+        const videoWrapper = document.getElementById('video-wrapper');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingText = document.getElementById('loading-text');
+        const loadingStatus = document.getElementById('loading-status');
+        const errorMessage = document.getElementById('error-message');
+        
+        let currentMode = 'text-to-video';
+        let uploadedImageBase64 = null;
+        let pollingInterval;
+
+        // ... Funções de UI (inalteradas) ...
+        function switchTab(mode) { currentMode = mode; document.getElementById('tab-text-to-video').classList.toggle('active', mode === 'text-to-video'); document.getElementById('tab-image-to-video').classList.toggle('active', mode === 'image-to-video'); document.getElementById('text-to-video-panel').classList.toggle('hidden', mode !== 'text-to-video'); document.getElementById('image-to-video-panel').classList.toggle('hidden', mode !== 'image-to-video'); }
+        document.getElementById('tab-text-to-video').addEventListener('click', () => switchTab('text-to-video'));
+        document.getElementById('tab-image-to-video').addEventListener('click', () => switchTab('image-to-video'));
+        imageUpload.addEventListener('change', (event) => { const file = event.target.files[0]; if (file) { const reader = new FileReader(); reader.onload = (e) => { uploadedImageBase64 = e.target.result; }; reader.readAsDataURL(file); document.getElementById('image-name').textContent = `Imagem selecionada: ${file.name}`; document.getElementById('image-name').classList.remove('hidden'); } else { uploadedImageBase64 = null; } });
+        const showLoading = (text, status) => { loadingText.textContent = text; loadingStatus.textContent = status; loadingOverlay.classList.remove('hidden'); loadingOverlay.classList.add('flex'); resultContainer.classList.add('hidden'); errorMessage.classList.add('hidden'); if(pollingInterval) clearInterval(pollingInterval); };
+        const hideLoading = () => { loadingOverlay.classList.add('hidden'); loadingOverlay.classList.remove('flex'); };
+        const displayError = (message) => { errorMessage.textContent = message; errorMessage.classList.remove('hidden'); hideLoading(); };
+        const displayVideo = (videoUrl) => { videoWrapper.innerHTML = `<video src="${videoUrl}" controls autoplay loop class="w-full"></video>`; resultContainer.classList.remove('hidden'); hideLoading(); };
+
+        const pollForResult = (statusUrl) => {
+            showLoading("A IA está a gerar o seu vídeo...", "(Isto pode levar até 2 minutos)");
+            
+            pollingInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(PROXY_URL + statusUrl, {
+                        headers: { "Authorization": `Token ${REPLICATE_API_TOKEN}` }
+                    }); 
+                    const result = await response.json();
+
+                    if (result.status === "succeeded") {
+                        clearInterval(pollingInterval);
+                        displayVideo(result.output[0]);
+                    } else if (result.status === "failed") {
+                        clearInterval(pollingInterval);
+                        displayError(`A geração falhou: ${result.error}`);
+                    }
+                } catch (error) {
+                    clearInterval(pollingInterval);
+                    displayError("Não foi possível obter o resultado do vídeo.");
+                }
+            }, 3000);
+        };
+
+        generateBtn.addEventListener('click', async () => {
+            showLoading("A enviar pedido para o servidor...", "");
+            try {
+                let payload = { version: '', input: {} };
+                if (currentMode === 'text-to-video') {
+                    if (!promptInput.value) { displayError("Por favor, descreva a cena."); return; }
+                    payload.version = MODEL_TEXT_TO_VIDEO;
+                    payload.input.prompt = promptInput.value;
+                } else {
+                    if (!uploadedImageBase64) { displayError("Por favor, carregue uma imagem."); return; }
+                    payload.version = MODEL_IMAGE_TO_VIDEO;
+                    payload.input.image = uploadedImageBase64;
+                }
+                
+                const initialResponse = await fetch(PROXY_URL + "https://api.replicate.com/v1/predictions", {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Token ${REPLICATE_API_TOKEN}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!initialResponse.ok) {
+                    const err = await initialResponse.json();
+                    throw new Error(err.detail || "Não foi possível iniciar a geração.");
+                }
+
+                const prediction = await initialResponse.json();
+                
+                if (prediction.urls && prediction.urls.get) {
+                    pollForResult(prediction.urls.get);
+                } else {
+                    throw new Error("Resposta da API inválida ao iniciar a previsão.");
+                }
+
+            } catch (error) {
+                displayError(error.message);
+            }
+        });
+    </script>
+</body>
+</html>
+
+                   pollForResult(prediction.urls.get.replace("https://api.replicate.com", "/api"));
+                } else {
+                    throw new Error("Resposta da API inválida.");
+                }
+            } catch (error) {
+                displayError(error.message);
+            }
+        });
+    </script>
+    <!-- Configuração do Proxy Netlify -->
+    <script>
+      (function() {
+        if (window.location.hostname !== 'localhost') {
+          const originalFetch = window.fetch;
+          window.fetch = function(url, options) {
+            if (url.toString().startsWith('/api/')) {
+              const newUrl = url.toString().replace('/api/', 'https://api.replicate.com/v1/');
+              const newOptions = { ...options };
+              newOptions.headers = { ...newOptions.headers, 'Authorization': `Token ${REPLICATE_API_TOKEN}` };
+              return originalFetch(newUrl, newOptions);
+            }
+            return originalFetch(url, options);
+          };
+        }
+      })();
+    </script>
+</body>
+</html>
+
+
